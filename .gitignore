@@ -1,0 +1,9 @@
+# Dependencies
+node_modules/
+
+# Build output (the loadable extension is built from src/)
+dist/
+
+# Logs / OS cruft
+*.log
+.DS_Store

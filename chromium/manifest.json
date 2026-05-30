@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Asyar Companion",
+  "version": "1.0.0",
+  "description": "Connects your browser to the Asyar launcher — search tabs, bookmarks, history, and the current page.",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["tabs", "scripting", "storage", "alarms", "search"],
+  "host_permissions": ["http://127.0.0.1/*", "ws://127.0.0.1/*", "<all_urls>"]
+}
