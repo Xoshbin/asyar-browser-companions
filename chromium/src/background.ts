@@ -1,4 +1,4 @@
-import { detectVariant } from './variant';
+import { detectVariant, readArcMarker, resolveVariant, type ChromiumVariant } from './variant';
 import { discoverPort, DEFAULT_PORT_RANGE } from './discovery';
 import { requestPairing, pollPairStatus } from './pairing';
 import { connect } from './wsclient';
@@ -6,7 +6,63 @@ import { buildHello, buildTabsEvent, buildRes, buildErr, type ServerReq, type Ta
 import { chromeTabToProtocolTab } from './tabs';
 import { Backoff, classifyClose } from './reconnect';
 
-const variant = detectVariant({ userAgent: navigator.userAgent, brave: (navigator as { brave?: unknown }).brave });
+// Mutable: starts from UA detection (which can't see Arc) and is upgraded to
+// 'arc' by resolveStartupVariant() before the first pairing/connect. Used for
+// pairing, the WS URL, the hello message, and every tab snapshot, so resolving
+// it up front keeps the browser identity consistent across all of them.
+let variant: ChromiumVariant = detectVariant({
+  userAgent: navigator.userAgent,
+  brave: (navigator as { brave?: unknown }).brave,
+});
+
+/**
+ * Probe an open page for Arc's marker CSS variable. Arc masks its User-Agent
+ * as Chrome, so the only reliable signal is injecting readArcMarker() into a
+ * real http(s) page. Returns false when no scriptable page exists yet or the
+ * injection fails — callers fall back to the UA variant and retry next start.
+ */
+async function probeIsArc(): Promise<boolean> {
+  try {
+    const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+    for (const tab of tabs) {
+      if (tab.id == null) continue;
+      try {
+        const [res] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: readArcMarker,
+          // MAIN world so getComputedStyle reads the page's own :root — Arc
+          // injects its --arc-palette-* variables onto the page, and MAIN
+          // guarantees CSSOM visibility regardless of isolated-world quirks.
+          world: 'MAIN',
+        });
+        if (res?.result === true) return true;
+      } catch {
+        // Restricted page (e.g. the Web Store) — try the next tab.
+      }
+    }
+  } catch {
+    // tabs/scripting unavailable — treat as "not Arc" and retry later.
+  }
+  return false;
+}
+
+/**
+ * Resolve the effective variant before pairing. Once Arc is confirmed the
+ * result is cached in extension storage, so subsequent starts skip the probe
+ * and the very first pairing is already keyed to 'arc' (no double prompt).
+ */
+async function resolveStartupVariant(): Promise<ChromiumVariant> {
+  const uaVariant = detectVariant({
+    userAgent: navigator.userAgent,
+    brave: (navigator as { brave?: unknown }).brave,
+  });
+  const { isArc } = await chrome.storage.local.get('isArc');
+  if (isArc === true) return resolveVariant(uaVariant, true);
+  const detected = await probeIsArc();
+  if (detected) await chrome.storage.local.set({ isArc: true });
+  return resolveVariant(uaVariant, detected);
+}
+
 const backoff = new Backoff({ baseMs: 1000, maxMs: 30000, factor: 2 });
 let ws: WebSocket | null = null;
 // Guards against overlapping connection attempts. In an MV3 service worker,
@@ -184,6 +240,9 @@ async function start() {
   if (connecting || (ws && ws.readyState !== WebSocket.CLOSED)) return;
   connecting = true;
   try {
+    // Correct the variant (Arc masks as Chrome) before pairing/connect so the
+    // browser identity is consistent everywhere downstream.
+    variant = await resolveStartupVariant();
     const port = await discoverPort(DEFAULT_PORT_RANGE, fetch);
     if (port === null) {
       scheduleReconnect();
