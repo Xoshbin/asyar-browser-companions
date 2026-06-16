@@ -1,13 +1,19 @@
 import { defineConfig, type Plugin } from 'vite';
 import { resolve } from 'path';
-import { copyFileSync } from 'fs';
+import { copyFileSync, mkdirSync, readdirSync } from 'fs';
 
-// Copies manifest.json into dist/ so the build output is a loadable unpacked extension.
+// Copies manifest.json and icons into dist/ so the build output is a loadable unpacked extension.
 function copyManifest(): Plugin {
   return {
     name: 'copy-manifest',
     closeBundle() {
       copyFileSync(resolve(__dirname, 'manifest.json'), resolve(__dirname, 'dist/manifest.json'));
+      const iconsDir = resolve(__dirname, 'icons');
+      const distIcons = resolve(__dirname, 'dist/icons');
+      mkdirSync(distIcons, { recursive: true });
+      for (const file of readdirSync(iconsDir)) {
+        copyFileSync(resolve(iconsDir, file), resolve(distIcons, file));
+      }
     },
   };
 }
